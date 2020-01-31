@@ -11,6 +11,7 @@ import json
 import pcap
 import time
 import optparse
+import communityid
 from socket import AF_INET, AF_INET6, inet_ntop
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -36,7 +37,8 @@ from pmercury.protocols.tls_certificate import TLS_Certificate
 class Fingerprinter:
 
     def __init__(self, database, output=None, analyze=False, num_procs=0,
-                 human_readable=False, group=False, endpoint=False, experimental=False, sslkeylog=None):
+                 human_readable=False, group=False, endpoint=False, experimental=False, sslkeylog=None,
+                 community_id=False):
 
         self.analyze        = analyze
         self.num_procs      = num_procs
@@ -45,6 +47,11 @@ class Fingerprinter:
         self.endpoint       = endpoint
         self.FLOW_TIMEOUT   = 150
         self.FLOW_UPDATE    = 15
+
+        if community_id:
+            self.community_id = communityid.CommunityID()
+        else:
+            self.community_id = False
 
         self.fast_path = True
         if analyze or human_readable or group or endpoint or experimental:
@@ -155,6 +162,24 @@ class Fingerprinter:
         flow = pkt_proc(ts, buf)
 
         if flow != None:
+            if self.community_id:
+                if flow['protocol'] == 6:
+                    tpl = communityid.FlowTuple.make_tcp(
+                        flow['src_ip'],
+                        flow['dst_ip'],
+                        flow['src_port'],
+                        flow['dst_port']
+                    )
+                    flow['community_id'] = self.community_id.calc(tpl)
+                elif flow['protocol'] == 17:
+                    tpl = communityid.FlowTuple.make_udp(
+                        flow['src_ip'],
+                        flow['dst_ip'],
+                        flow['src_port'],
+                        flow['dst_port']
+                    )
+                    flow['community_id'] = self.community_id.calc(tpl)
+
             if self.fast_path:
                 self.write_record(flow)
                 return
@@ -373,6 +398,7 @@ class Fingerprinter:
         self.flow_cache[flow_key]['protocol']     = flow['protocol']
         self.flow_cache[flow_key]['event_start']  = flow['event_start']
         self.flow_cache[flow_key]['event_end']    = flow['event_start']
+        self.flow_cache[flow_key]['community_id'] = flow['community_id']
         self.flow_cache[flow_key]['fingerprints'] = []
 
 
@@ -465,6 +491,8 @@ def main():
                       help='return the top-n most probable processes',default=0)
     parser.add_option('-s','--sslkeylogfile',action='store',dest='sslkeylog',
                       help='filename of sslkeylog output for decryption',default=None)
+    parser.add_option('-i','--communityid',action='store_true',dest='community_id',
+                      help='calculate the community ID for each flow',default=None)
 
     options, args = parser.parse_args()
 
@@ -481,7 +509,8 @@ def main():
 
     fingerprinter = Fingerprinter(options.fp_db, output, options.analyze,
                                   options.num_procs, options.human_readable, options.group,
-                                  options.endpoint, options.experimental, options.sslkeylog)
+                                  options.endpoint, options.experimental, options.sslkeylog,
+                                  options.community_id)
 
     if options.lookup != None:
         fingerprinter.lookup_fingerprint_string(options.lookup)
